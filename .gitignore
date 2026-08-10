@@ -19,3 +19,5 @@ venv/
 # Generated inference artifacts (built on-device, never committed)
 *.engine
 *.trt
+
+labels.txt
