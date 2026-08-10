@@ -1,0 +1,21 @@
+# Build output — C/C++
+*.o
+*.a
+*.d
+*.lo
+*.la
+*.obj
+*.so
+*.so.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Generated inference artifacts (built on-device, never committed)
+*.engine
+*.trt
