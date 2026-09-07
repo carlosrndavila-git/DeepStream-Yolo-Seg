@@ -40,9 +40,11 @@ TARGET_LIB:= libnvdsinfer_custom_impl_Yolo_seg.so
 CFLAGS:= -Wall -std=c++17 -shared -fPIC -Wno-error=deprecated-declarations
 
 CFLAGS+= -I/opt/nvidia/deepstream/deepstream/sources/includes -I/usr/local/cuda-$(CUDA_VER)/include
+CFLAGS+= $(shell pkg-config --cflags opencv4)
 CUFLAGS:= -I/opt/nvidia/deepstream/deepstream/sources/includes -I/usr/local/cuda-$(CUDA_VER)/include
 
 LIBS+= -lnvinfer -L/usr/local/cuda-$(CUDA_VER)/lib64 -lcudart -lstdc++fs
+LIBS+= -lopencv_core -lopencv_imgproc
 
 LFLAGS:= -shared -Wl,--start-group $(LIBS) -Wl,--end-group
 
