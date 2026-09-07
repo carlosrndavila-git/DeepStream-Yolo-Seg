@@ -26,8 +26,7 @@
  *      and binarizes at 0.5 so nvdsosd renders shape-fitting masks (not rectangles).
  *   4. Crops the mask to the bbox region in proto space.
  *   5. Applies greedy IoU-NMS per class before returning objectList, because
- *      cluster-mode=4 in DeepStream 6.x may not deduplicate NvDsInferInstanceMaskInfo
- *      objects reliably.
+ *      cluster-mode=4 in DeepStream 6.x performs no clustering or deduplication.
  *
  * Config keys required in nvinfer config:
  *   network-type=3
@@ -51,8 +50,8 @@
 /* Number of mask prototype channels (fixed by the segmentation head). */
 static constexpr size_t kNumMaskCoeffs = 32;
 
-/* NMS IoU threshold used inside the parser.
- * Should match nms-iou-threshold in [class-attrs-all] of the nvinfer config. */
+/* NMS IoU threshold used inside the parser; the SDK does not pass its config
+ * nms-iou-threshold into the instance-mask parser callback. */
 static constexpr float kNmsIouThreshold = 0.45f;
 
 extern "C" bool

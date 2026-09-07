@@ -110,3 +110,30 @@ pre-cluster-threshold=0.25
 ##
 
 My projects: https://www.youtube.com/MarcosLucianoTV
+
+## Standard YOLO11 entry point
+
+`NvDsInferParseYoloSegStandard` is an additional instance-mask callback for the
+standard FP32 YOLO11 output contract: `[4 + classes + 32, anchors]` center-xywh
+boxes/class scores/mask coefficients and `[32, proto_height, proto_width]`
+prototypes, per batch member. It rejects ambiguous channel dimensions and the
+legacy anchor-first raw layout. The original `NvDsInferParseYoloSeg` is retained.
+
+Build with the deployment DeepStream/CUDA SDK and OpenCV 4 core/imgproc development
+packages (`pkg-config opencv4`). Select `network-type=3`,
+`parse-bbox-instance-mask-func-name=NvDsInferParseYoloSegStandard`,
+`output-instance-mask=1`, and `cluster-mode=4` (no SDK clustering).
+
+This callback fixes class-aware IoU NMS at 0.45 on unclipped boxes, globally caps
+survivors at 300 by confidence with input-order ties, and constructs masks only
+for survivors. Masks use sigmoid, strict `>0.5`, uint8 bilinear resize to network
+resolution, and a truncating input-space crop. Confidence filtering uses the
+SDK-provided per-class pre-cluster thresholds. Return buffers use `new[]`; ownership
+passes to DeepStream only after successful parsing. SDK mask rendering threshold
+0.5 preserves these binary float masks. `nms-iou-threshold` does not configure the
+callback; retain `topk=300` for compatibility with legacy consumers.
+
+Qualification is 640×640, FP32 I/O, batch-one execution on DeepStream 6.2 / TensorRT
+8.5.2.2. The callback does not restrict the enclosing batch size because nvinfer
+calls it per member. Use an engine built from the standard model on its deployment
+host; do not reuse the legacy raw-model engine.
