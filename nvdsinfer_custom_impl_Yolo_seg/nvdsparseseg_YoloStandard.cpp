@@ -6,8 +6,10 @@
  * NvDsInferParseDetectionParams. cluster-mode=4 disables SDK clustering;
  * config nms-iou-threshold does not configure this function.
  *
- * Masks follow eager: sigmoid -> binary uint8 -> OpenCV INTER_LINEAR resize
- * to network dimensions -> truncating input-space crop. The SDK owns the
+ * Masks follow eager: sigmoid -> binary uint8 -> linear resize to network
+ * dimensions -> truncating input-space crop. The resize is a pinned rule
+ * (resizeLinearU8 below), validated against OpenCV 4.12's INTER_LINEAR on 8-bit
+ * planes, rather than the installed cv::resize, whose results vary by version. The SDK owns the
  * returned new[] mask buffers. This entry point never accepts the legacy
  * raw export's anchor-first/corner-box contract.
  */
@@ -59,6 +61,56 @@ double overlap(const Candidate& a, const Candidate& b)
 double clip(double value, unsigned limit)
 {
     return std::max(0.0, std::min(value, static_cast<double>(limit)));
+}
+
+// The pinned linear resize of a CV_8U plane: 11-bit taps at half-pixel centres
+// (scale 1 / (dst / src), weights rounded half to even); x clamps index and
+// fraction, y clamps only the row; vertical ((S0 >> 4) * b0 >> 16) +
+// ((S1 >> 4) * b1 >> 16), then (v + 2) >> 2.
+void linearTaps(int src, int dst, bool clampFraction, std::vector<int>& index,
+                std::vector<int>& alpha)
+{
+    index.resize(dst); alpha.resize(2 * static_cast<size_t>(dst));
+    const double scale = 1.0 / (static_cast<double>(dst) / src);
+    for (int d = 0; d < dst; ++d) {
+        float f = static_cast<float>((d + 0.5) * scale - 0.5);
+        int s = static_cast<int>(std::floor(f));
+        f -= s;
+        if (clampFraction) {
+            if (s < 0) { f = 0; s = 0; }
+            if (s >= src - 1) { f = 0; s = src - 1; }
+        }
+        index[d] = s;
+        alpha[2 * d] = static_cast<int>(std::nearbyint((1.0f - f) * 2048.0f));
+        alpha[2 * d + 1] = static_cast<int>(std::nearbyint(f * 2048.0f));
+    }
+}
+
+cv::Mat resizeLinearU8(const cv::Mat& src, int dw, int dh)
+{
+    const int sw = src.cols, sh = src.rows;
+    if (sw == dw && sh == dh) return src.clone();
+    std::vector<int> tx, ax, ty, ay;
+    linearTaps(sw, dw, true, tx, ax);
+    linearTaps(sh, dh, false, ty, ay);
+    std::vector<int> row0(dw), row1(dw);
+    auto horizontal = [&](int y, std::vector<int>& row) {
+        const unsigned char* s = src.ptr<unsigned char>(y);
+        for (int x = 0; x < dw; ++x)
+            row[x] = s[tx[x]] * ax[2 * x] + s[std::min(tx[x] + 1, sw - 1)] * ax[2 * x + 1];
+    };
+    cv::Mat out(dh, dw, CV_8U);
+    for (int y = 0; y < dh; ++y) {
+        horizontal(std::min(std::max(ty[y], 0), sh - 1), row0);
+        horizontal(std::min(std::max(ty[y] + 1, 0), sh - 1), row1);
+        unsigned char* d = out.ptr<unsigned char>(y);
+        for (int x = 0; x < dw; ++x) {
+            const int v = ((std::min(std::max(row0[x] >> 4, -32768), 32767) * ay[2 * y]) >> 16) +
+                          ((std::min(std::max(row1[x] >> 4, -32768), 32767) * ay[2 * y + 1]) >> 16);
+            d[x] = static_cast<unsigned char>(std::min(std::max((v + 2) >> 2, 0), 255));
+        }
+    }
+    return out;
 }
 } // namespace
 
@@ -144,8 +196,7 @@ extern "C" bool NvDsInferParseYoloSegStandard(
                 if (!std::isfinite(value)) return false;
                 binary.data[p] = (1.0f / (1.0f + std::exp(-value))) > 0.5f ? 1 : 0;
             }
-            cv::Mat full;
-            cv::resize(binary, full, cv::Size(network.width, network.height), 0, 0, cv::INTER_LINEAR);
+            const cv::Mat full = resizeLinearU8(binary, network.width, network.height);
             double x1 = clip(candidate.x1, network.width), y1 = clip(candidate.y1, network.height);
             double x2 = clip(candidate.x2, network.width), y2 = clip(candidate.y2, network.height);
             int ix1 = static_cast<int>(x1), iy1 = static_cast<int>(y1);
