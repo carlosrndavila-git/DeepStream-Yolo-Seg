@@ -86,25 +86,27 @@ void linearTaps(int src, int dst, bool clampFraction, std::vector<int>& index,
     }
 }
 
-cv::Mat resizeLinearU8(const cv::Mat& src, int dw, int dh)
+// Only the output window [x0, x1) x [y0, y1) of the dw x dh plane is computed; each of its
+// pixels takes the same taps as in the full plane.
+cv::Mat resizeLinearU8(const cv::Mat& src, int dw, int dh, int x0, int y0, int x1, int y1)
 {
     const int sw = src.cols, sh = src.rows;
-    if (sw == dw && sh == dh) return src.clone();
     std::vector<int> tx, ax, ty, ay;
     linearTaps(sw, dw, true, tx, ax);
     linearTaps(sh, dh, false, ty, ay);
-    std::vector<int> row0(dw), row1(dw);
+    const int ow = std::max(0, x1 - x0), oh = std::max(0, y1 - y0);
+    std::vector<int> row0(ow), row1(ow);
     auto horizontal = [&](int y, std::vector<int>& row) {
         const unsigned char* s = src.ptr<unsigned char>(y);
-        for (int x = 0; x < dw; ++x)
-            row[x] = s[tx[x]] * ax[2 * x] + s[std::min(tx[x] + 1, sw - 1)] * ax[2 * x + 1];
+        for (int i = 0, x = x0; i < ow; ++i, ++x)
+            row[i] = s[tx[x]] * ax[2 * x] + s[std::min(tx[x] + 1, sw - 1)] * ax[2 * x + 1];
     };
-    cv::Mat out(dh, dw, CV_8U);
-    for (int y = 0; y < dh; ++y) {
+    cv::Mat out(oh, ow, CV_8U);
+    for (int j = 0, y = y0; j < oh; ++j, ++y) {
         horizontal(std::min(std::max(ty[y], 0), sh - 1), row0);
         horizontal(std::min(std::max(ty[y] + 1, 0), sh - 1), row1);
-        unsigned char* d = out.ptr<unsigned char>(y);
-        for (int x = 0; x < dw; ++x) {
+        unsigned char* d = out.ptr<unsigned char>(j);
+        for (int x = 0; x < ow; ++x) {
             const int v = ((std::min(std::max(row0[x] >> 4, -32768), 32767) * ay[2 * y]) >> 16) +
                           ((std::min(std::max(row1[x] >> 4, -32768), 32767) * ay[2 * y + 1]) >> 16);
             d[x] = static_cast<unsigned char>(std::min(std::max((v + 2) >> 2, 0), 255));
@@ -196,17 +198,18 @@ extern "C" bool NvDsInferParseYoloSegStandard(
                 if (!std::isfinite(value)) return false;
                 binary.data[p] = (1.0f / (1.0f + std::exp(-value))) > 0.5f ? 1 : 0;
             }
-            const cv::Mat full = resizeLinearU8(binary, network.width, network.height);
             double x1 = clip(candidate.x1, network.width), y1 = clip(candidate.y1, network.height);
             double x2 = clip(candidate.x2, network.width), y2 = clip(candidate.y2, network.height);
             int ix1 = static_cast<int>(x1), iy1 = static_cast<int>(y1);
             int cropW = static_cast<int>(x2) - ix1, cropH = static_cast<int>(y2) - iy1;
+            const cv::Mat crop = resizeLinearU8(binary, network.width, network.height, ix1, iy1,
+                                                ix1 + std::max(0, cropW), iy1 + std::max(0, cropH));
             // Preserve the selected instance even when its visible mask is empty.
             unsigned mw = std::max(1, cropW), mh = std::max(1, cropH);
             auto mask = std::unique_ptr<float[]>(new float[static_cast<size_t>(mw) * mh]());
             for (int y = 0; y < cropH; ++y)
                 for (int x = 0; x < cropW; ++x)
-                    mask[y * mw + x] = full.at<unsigned char>(iy1 + y, ix1 + x);
+                    mask[y * mw + x] = crop.at<unsigned char>(y, x);
             NvDsInferInstanceMaskInfo object{};
             object.left = x1; object.top = y1; object.width = x2 - x1; object.height = y2 - y1;
             object.detectionConfidence = candidate.score; object.classId = candidate.classId;
